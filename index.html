@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chaucer Finger‑Tips — Webcam Word Reveal</title>
+  <style>
+    :root {
+      --bg: #0b0c10;
+      --card: #14161c;
+      --ink: #e8e8f0;
+      --accent: #7db0ff;
+      --muted: #98a2b3;
+    }
+    * { box-sizing: border-box }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1000px 800px at 110% -10%, #10121a, var(--bg));
+      color: var(--ink);
+      font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Inter, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .app {
+      width: min(100%, 960px);
+      display: grid;
+      gap: 14px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    h1 { font-size: clamp(20px, 2.6vw, 28px); margin: 0; letter-spacing: 0.3px; }
+    .pill { font-size: 12px; color: var(--muted); }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      border: 1px solid rgba(255,255,255,0.07);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+      border-radius: 16px;
+      overflow: clip;
+    }
+    .stage {
+      position: relative;
+      aspect-ratio: 16 / 10;
+      display: grid;
+      place-items: center;
+    }
+    #output { position: absolute; inset: 0; }
+    #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); filter: saturate(1.05) contrast(1.05); }
+    #canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+    .controls { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
+    button, select {
+      background: #1b1e26; color: var(--ink); border: 1px solid rgba(255,255,255,0.12);
+      padding: 8px 12px; border-radius: 10px; font: inherit; cursor: pointer;
+    }
+    .hint {
+      padding: 10px 14px; color: var(--muted); font-size: 14px;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .legend { display: inline-flex; align-items: center; gap: 6px; }
+    .dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; background: var(--accent); }
+    a { color: var(--accent); }
+    footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Chaucer Finger‑Tips<span class="pill"> — raise a finger to reveal a word</span></h1>
+      <button id="startBtn">Enable webcam</button>
+    </header>
+
+    <section class="card stage">
+      <div id="output">
+        <video id="video" playsinline></video>
+        <canvas id="canvas"></canvas>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="controls">
+        <div>
+          <strong>Sentence:</strong>
+          <span id="sentenceText"></span>
+        </div>
+      </div>
+      <div class="hint">
+        <div class="legend"><span class="dot"></span> Words appear on the tips of raised fingers.</div>
+        <div>Hold your palms toward the camera. Raise fingers one‑by‑one to reveal: <em>“The lyf so short, the craft so long to lerne.”</em></div>
+      </div>
+    </section>
+
+    <footer>
+      Built with <a href="https://developers.google.com/mediapipe/solutions/vision/hand_landmarker" target="_blank" rel="noreferrer noopener">MediaPipe Hands</a>. Works best on desktop Chrome/Edge. No video is uploaded.
+    </footer>
+  </div>
+
+  <!-- MediaPipe dependencies (legacy JS build loads models from CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.min.js"></script>
+
+  <script>
+    // --- Config ---
+    const SENTENCE = [
+      "The", "lyf", "so", "short,", "the", "craft", "so", "long", "to", "lerne."
+    ];
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const sentenceText = document.getElementById('sentenceText');
+    const startBtn = document.getElementById('startBtn');
+
+    sentenceText.textContent = SENTENCE.join(' ');
+
+    let started = false;
+    let camera = null;
+
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    startBtn.addEventListener('click', async () => {
+      if (started) return;
+      started = true;
+      startBtn.textContent = 'Starting…';
+      startBtn.disabled = true;
+
+      camera = new Camera(video, {
+        onFrame: async () => {
+          await hands.send({image: video});
+        },
+        width: 960,
+        height: 600
+      });
+      await camera.start();
+      startBtn.textContent = 'Webcam on';
+    });
+
+    function onResults(results) {
+      resizeCanvasToVideo();
+      // Clear frame
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const allTips = [];
+      const raisedFingerPoints = [];
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length) {
+        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+          const landmarks = results.multiHandLandmarks[i];
+          const handness = results.multiHandedness && results.multiHandedness[i] ? results.multiHandedness[i].label : 'Right';
+
+          // Draw skeleton
+          drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {lineWidth: 3});
+          drawLandmarks(ctx, landmarks, {radius: 3});
+
+          // Determine finger up/down state
+          const up = fingersUp(landmarks, handness);
+          const tipsIdx = {thumb: 4, index: 8, middle: 12, ring: 16, pinky: 20};
+
+          for (const finger of Object.keys(tipsIdx)) {
+            const tipIndex = tipsIdx[finger];
+            const tip = landmarks[tipIndex];
+            const px = tip.x * canvas.width;
+            const py = tip.y * canvas.height;
+            allTips.push({x: px, y: py});
+            if (up[finger]) {
+              raisedFingerPoints.push({x: px, y: py});
+            }
+          }
+        }
+      }
+
+      // Sort visible raised fingers left->right for stable labeling
+      raisedFingerPoints.sort((a,b) => a.x - b.x);
+
+      const toReveal = Math.min(raisedFingerPoints.length, SENTENCE.length);
+
+      // Draw glowing labels on the first N raised fingertips
+      for (let i = 0; i < toReveal; i++) {
+        const {x, y} = raisedFingerPoints[i];
+        const word = SENTENCE[i];
+        drawWordLabel(word, x, y);
+      }
+
+      // Draw a subtle dot on *all* fingertips to guide the user
+      for (const p of allTips) drawHaloDot(p.x, p.y);
+    }
+
+    function resizeCanvasToVideo() {
+      const rect = video.getBoundingClientRect();
+      const w = rect.width * devicePixelRatio;
+      const h = rect.height * devicePixelRatio;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w; canvas.height = h; ctx.scale(devicePixelRatio, devicePixelRatio);
+      }
+    }
+
+    function drawHaloDot(x, y) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(125,176,255,0.9)';
+      ctx.shadowColor = 'rgba(125,176,255,0.7)';
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawWordLabel(text, x, y) {
+      const padX = 12, padY = 8;
+      ctx.save();
+      ctx.font = '600 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, Helvetica, Arial';
+      const metrics = ctx.measureText(text);
+      const w = metrics.width + padX * 2;
+      const h = 30;
+      const rx = 10;
+
+      // Offset label slightly above the fingertip
+      const lx = x - w/2;
+      const ly = y - 38;
+
+      // Card
+      roundRect(ctx, lx, ly, w, h, rx);
+      ctx.fillStyle = 'rgba(15, 20, 34, 0.95)';
+      ctx.strokeStyle = 'rgba(125,176,255,0.5)';
+      ctx.lineWidth = 1.2;
+      ctx.fill();
+      ctx.stroke();
+
+      // Glow tail
+      ctx.beginPath();
+      ctx.moveTo(x, y - 6);
+      ctx.lineTo(x, ly + h);
+      ctx.strokeStyle = 'rgba(125,176,255,0.35)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Text
+      ctx.fillStyle = '#e8e8f0';
+      ctx.fillText(text, lx + padX, ly + 20);
+      ctx.restore();
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    // Finger state heuristic (works for palms facing camera)
+    function fingersUp(lm, handed) {
+      // For index..pinky: tip y is above PIP y (lower numeric y) when finger is raised (assuming upright orientation)
+      const upIdx = (tip, pip) => lm[tip].y < lm[pip].y - 0.02; // with small margin
+      const fingers = {
+        index: upIdx(8,6),
+        middle: upIdx(12,10),
+        ring: upIdx(16,14),
+        pinky: upIdx(20,18),
+        thumb: false,
+      };
+      // Thumb uses x compared to IP/MCP depending on left/right
+      // When palm faces camera, right-hand thumb points left (smaller x), left-hand thumb points right (larger x)
+      const isRight = handed === 'Right';
+      const tipX = lm[4].x;
+      const ipX  = lm[3].x;
+      const mcpX = lm[2].x;
+      if (isRight) fingers.thumb = tipX < ipX - 0.02 && ipX < mcpX - 0.005; else fingers.thumb = tipX > ipX + 0.02 && ipX > mcpX + 0.005;
+      return fingers;
+    }
+  </script>
+</body>
+</html>
